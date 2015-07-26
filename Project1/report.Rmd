@@ -1,0 +1,134 @@
+---
+title: "Predicting Bicep Curl Efficiency Using wearable technology data"
+author: "Sean Hegarty"
+date: "Tuesday, July 14, 2015"
+output: html_document
+---
+
+##Introduction
+Using new wearable technology, it is now possible to track personal physiological activity. This opens up a new area of research that could allow for more precise understanding of how the human body works and maintains health. This particular project seeks to model how well unilateral dumbbell bicep curls are executed using data from six young participants.
+
+###Downloading the data
+```{r Download Data}
+if(!"pml-training.csv" %in% dir("data")){
+  print("Downloading Activity Data")
+  setwd(paste(ProjDir,"/data",sep=""))
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+                destfile = "pml-training.csv")
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+                destfile = "pml-testing.csv")
+  setwd(ProjDir)
+}
+```
+###Importing Data
+```{r Import Data}
+if(!"pml.training" %in% ls()){
+  print("Importing Training Data into Environment")
+  setwd(paste(ProjDir,"/data",sep=""))
+  pml.training <- read.csv("pml-training.csv")
+  setwd(ProjDir)
+}
+if(!"pml.testing" %in% ls()){
+  print("Importing Testing Data into Environment")
+  setwd(paste(ProjDir,"/data",sep=""))
+  pml.testing <- read.csv("pml-testing.csv")
+  setwd(ProjDir)
+}
+```
+
+##Data Preprocessing
+First necessity was to remove the `classe`, *response*, variable so that it wouldn't be effected by any of the following preprocessing decisions.
+
+```{r Data Cleaning}
+library(caret)
+
+classe <- pml.training$classe
+```
+
+I chose to try out the preprocessing options explained in this [preprocessing tutorial](http://topepo.github.io/caret/preprocess.html). I found the nearZeroVar function to be very useful in reducing the number of predictors, and with the understanding that it removes features with little to no variance, therefore little to no predictive power, it makes sense to use this function.
+
+```{r Preprocessing: Near Zero Variance}
+nsv <- nearZeroVar(pml.training,saveMetrics=TRUE)
+pml.train <- pml.training[,!nsv$nzv]
+dim(pml.train)
+```
+
+The next obvious choice was to remove precalculated statistics, as they are just functions of the rest of the data.
+
+```{r Preprocessing: Remove Precalculated Statistics}
+pml.train <- pml.train[,colSums(is.na(pml.train))<19216]
+dim(pml.train)
+```
+
+After taking a look at the names of the left over features, some of them did not seem to make sense to include from personal judgement. Timestamps, windows, etc, were just a reference to different times that the experiments were observed.
+
+```{r Preprocessing: Remove Perceived Unnecessary Predictors}
+pml.train <- pml.train[,sapply(pml.train,is.numeric)]
+if(ncol(pml.train)>33){
+  pml.train <- pml.train[,-grep("^X|stamp|window",names(pml.train))]
+}
+dim(pml.train)
+```
+
+A further step for reducing the number of predictors used was to remove variables that are highly correlated with each other. A few, but not all statistical learning methods will struggle to give accurate results when multicollinearity is present. This is simply a helping hand to the random forests method that is used in this analysis.
+
+```{r PreProcessing: Identify Correlated Predictors}
+desCor <- cor(pml.train)
+summary(desCor[upper.tri(desCor)])
+hiCor <- sum(abs(desCor[upper.tri(desCor)])>0.8)
+hiCorDes <- findCorrelation(desCor,cutoff=0.75)
+pml.train <- pml.train[, -hiCorDes]
+dim(pml.train)
+
+descrCor2 <- cor(pml.train[,7:(ncol(pml.train)-1)])
+summary(descrCor2[upper.tri(descrCor2)])
+```
+
+Below, I remove all predictors that were processed out in the steps listed above in order to make the data uniform.
+
+```{r PreProcessing: Making an equivalent test set}
+name <- names(pml.train)
+pml.train$classe <- classe
+problem_id <- pml.testing$problem_id
+pml.test <- pml.testing[,name]
+pml.test$problem_id <- problem_id
+```
+
+##Cross-Validation: *Create a training set and test set*
+My initial validation set used a larger training set, up to 50% of the data, but after experimenting, I achieved very similar levels of accuracy with lower subsets of the data.
+
+```{r Designate Train/Test Sets}
+# Set a seed for reproducibility
+set.seed(4190)
+inTrain <- createDataPartition(pml.train$classe,p= 0.25, list= FALSE)
+training <- pml.train[inTrain,]
+testing <- pml.train[-inTrain,]
+```
+
+##Data Modeling: *Random Forests*
+The next added validation level, and subsequent modeling, was to use 5-fold cross-validation on the training set constructed from 25% of the data. This allows whatever method I use to achieve lower variance.
+
+```{r 5fold Cross-Validation}
+fitControl <- trainControl(method="repeatedcv",
+                           number=5)
+```
+
+My model was built using Random Forests for its professed high accuracy. The model was modified slightly to use 5-fold cross validation to reduce variance.
+
+```{r Build rf model}
+library(randomForest)
+modelFit <- train(training$classe ~ .,
+                  method="rf",
+                  trControl=fitControl,
+                  data=training)
+confusionMatrix(testing$classe,predict(modelFit,testing))
+```
+
+##Model Testing: *Prediction accuracy*
+Using random forests, I was able to achieve very high accuracy, 97.55% on the test set. Remember, the test set is constructed from 75% of the data. High accuracy, 97.55%, combined with a majority test set would seem to imply that Random Forests using 5-fold cross-validation is an effective tool for modeling the efficiency of a unilateral dumbell bicep curl.
+
+```{r Test Model}
+postResample(predict(modelFit,testing),testing$classe)
+
+Answers <- predict(modelFit,pml.testing)
+```
